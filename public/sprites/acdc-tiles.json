@@ -1,0 +1,45 @@
+{
+ "image": "sprites/acdc-tiles.png",
+ "tile": {
+  "w": 32,
+  "h": 16
+ },
+ "tiles": {
+  "floor": {
+   "index": 0,
+   "u0": 0.0,
+   "u1": 0.25,
+   "source": {
+    "x": 192,
+    "y": 288
+   }
+  },
+  "floorAlt": {
+   "index": 1,
+   "u0": 0.25,
+   "u1": 0.5,
+   "source": {
+    "x": 288,
+    "y": 240
+   }
+  },
+  "frame": {
+   "index": 2,
+   "u0": 0.5,
+   "u1": 0.75,
+   "source": {
+    "x": 416,
+    "y": 80
+   }
+  },
+  "accent": {
+   "index": 3,
+   "u0": 0.75,
+   "u1": 1.0,
+   "source": {
+    "x": 736,
+    "y": 528
+   }
+  }
+ }
+}

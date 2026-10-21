@@ -1,0 +1,30 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #04060e;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+#hud {
+  position: fixed;
+  left: 16px;
+  bottom: 14px;
+  font: 12px/1.5 ui-monospace, 'SF Mono', Menlo, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7fd4ff;
+  text-shadow: 0 0 8px rgba(28, 152, 208, 0.8);
+  pointer-events: none;
+  user-select: none;
+}
