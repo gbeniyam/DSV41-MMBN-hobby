@@ -47,6 +47,32 @@ The sheet does not label its rows, so the mapping was derived from the pixels:
 `src/sprites.ts` turns movement input into a facing; `src/player.ts` animates and
 collides; `src/world.ts` holds the tile map.
 
+## World editor
+
+Press **E** (or click *Open* on the panel) to toggle the in-app world builder. It edits
+the live world and persists to `localStorage`:
+
+- **Tiles** — paint `#` walkway, `@` plaza, or erase to void. Click the canvas directly;
+  the picker raycasts the isometric camera onto the ground plane, so clicks land on the
+  cell you actually see.
+- **Props** — BBS terminals, Mystery Data, nav posts, and avatars. Each is a solid
+  obstacle except Mystery Data.
+- **Teleport portals** — click *Link portal*, click the source cell, then set a target
+  area and cell. Walking onto a pad warps you there, matching the game's warp points.
+- **Areas** — switch between ACDC Square, ACDC 1, and the Undernet, or create a blank one.
+- **Export / Import** — JSON round-trip of every area, so maps can be committed to the repo.
+
+Areas are plain data (`src/area.ts`):
+
+```ts
+{ id, name, tiles: string[], props: [{ type, gx, gz }],
+  portals: [{ gx, gz, to: { area, gx, gz } }], landmarks: { plazas, entrance } }
+```
+
+`validateWorld` checks every portal across all areas at once — destination area exists,
+destination is not void, and the landing cell is not another portal (which would warp you
+in a loop). Invalid worlds are logged on boot rather than failing silently.
+
 ## The platform
 
 The scene recreates **ACDC Square**, which lives in ACDC 3 in MMBN3 (per the
@@ -62,7 +88,9 @@ Three tests keep it honest:
   collision predicate, so it tests gameplay not just the array),
 - the plaza centroids form a non-degenerate triangle with one plaza above and two
   below, and the entrance sits north of all of them,
-- the player cannot overlap a prop from any of four approach directions.
+- the player cannot overlap a prop from any of four approach directions,
+- portals resolve to walkable destinations, warps actually switch areas, and painted
+  tiles change collision and survive a reload.
 
 ### Tiles
 

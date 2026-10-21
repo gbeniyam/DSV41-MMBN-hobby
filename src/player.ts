@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { dirFromScreen, type AtlasManifest, type Dir } from './sprites';
 import { shadowTexture } from './textures';
-import { SPAWN, surfaceHeightAt, type WorldData } from './world';
+import { surfaceHeightAt, worldFromArea, type WorldData } from './world';
 
 export const SPEED = 6.5;
 export const PLAYER_RADIUS = 0.62;
@@ -28,14 +28,7 @@ const S = Math.SQRT1_2;
 
 export class Player {
   readonly group = new THREE.Group();
-  readonly state: PlayerState = {
-    x: SPAWN.x,
-    y: 0,
-    z: SPAWN.z,
-    dir: 'S',
-    frame: 0,
-    moving: false,
-  };
+  readonly state: PlayerState = { x: 0, y: 0, z: 0, dir: 'S', frame: 0, moving: false };
 
   private readonly sprite: THREE.Mesh;
   private readonly material: THREE.MeshBasicMaterial;
@@ -76,6 +69,34 @@ export class Player {
     this.material.map!.offset.set(col / columns, 1 - (row + 1) / rows);
     this.state.dir = dir;
     this.state.frame = col;
+  }
+
+  /** Places the player at an area's entrance and clears motion state. */
+  spawnAt(world: WorldData): void {
+    const p = worldFromArea(world.area);
+    this.state.x = p.x;
+    this.state.z = p.z;
+    this.state.dir = 'S';
+    this.state.frame = 0;
+    this.state.moving = false;
+    this.animTime = 0;
+    const ground = this.heightUnder(world);
+    this.state.y = ground ?? 0;
+    this.group.position.set(this.state.x, this.state.y, this.state.z);
+    this.setCell('S', 0);
+  }
+
+  /**
+   * Returns the portal the player is standing on, if any. Portals are entered by
+   * walking onto the pad, matching how the game's warp points work.
+   */
+  portalAt(world: WorldData): (typeof world.portals)[number] | null {
+    for (const p of world.portals) {
+      const dx = this.state.x - p.x;
+      const dz = this.state.z - p.z;
+      if (dx * dx + dz * dz < 0.72 * 0.72) return p;
+    }
+    return null;
   }
 
   /** Height of the floor under the player, or null over the void. */

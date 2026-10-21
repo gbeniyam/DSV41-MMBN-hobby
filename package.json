@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "playwright test",
     "verify:atlas": "node scripts/verify-atlas.mjs",
-    "assets": "python3 scripts/make-atlas.py && python3 scripts/make-tiles.py"
+    "assets": "python3 scripts/make-atlas.py && python3 scripts/make-tiles.py",
+    "verify:maps": "node scripts/verify-maps.mjs"
   },
   "dependencies": {
     "three": "^0.169.0"

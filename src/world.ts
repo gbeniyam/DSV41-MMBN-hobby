@@ -1,19 +1,44 @@
 import * as THREE from 'three';
 import { PAL } from './palette';
 import { loadAcdaTileAtlas, voidTexture } from './textures';
+import {
+  addProp,
+  addPortal,
+  blankArea,
+  type AreaDef,
+  type PortalDef,
+  type PropType,
+  type Tile,
+  TILE_HEIGHT,
+  isWalkable,
+  setTile,
+  validateArea,
+} from './area';
 
 export const TILE = 2;
 
-/**
- * ACDC Square, matching the game's documented layout (MMBN3 map guide +
- * ACDC Square description): three polygon platforms joined in a triangle, the
- * entrance arm at the top (north), the platform elevated off the void, and the
- * BBS terminals in the lower-left plaza.
- *   '.' void   '#' low walkway   '@' raised plaza
- * Rows run north -> south, columns west -> east. Verified fully connected: every
- * walkable cell is reachable from the north entrance (119/119).
- */
-const MAP = [
+export interface Cell {
+  gx: number;
+  gz: number;
+  height: number;
+  kind: 'void' | 'walk' | 'plaza';
+}
+
+export interface WorldData {
+  group: THREE.Group;
+  cells: Map<string, Cell>;
+  /** Solid colliders in world XZ for things you walk around. */
+  blockers: THREE.Box2[];
+  portals: Array<PortalDef & { x: number; z: number }>;
+  area: AreaDef;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in areas
+// ---------------------------------------------------------------------------
+
+/** ACDC Square tiles: three plazas in a triangle, entrance arm at the top. */
+const ACDC_SQUARE_TILES = [
   '........###........',
   '........#@#........',
   '........@@@........',
@@ -35,140 +60,196 @@ const MAP = [
   '...................',
 ];
 
-const MAP_W = MAP[0]!.length;
-const MAP_H = MAP.length;
-/** Grid coordinate that maps to world origin. */
-const CENTER_X = (MAP_W - 1) / 2;
-const CENTER_Z = (MAP_H - 1) / 2;
-
-/** Grid positions of the three plaza centres (north, south-west, south-east). */
-const PLAZAS: Array<[number, number]> = [
-  [9, 4],
-  [4, 14],
-  [14, 14],
+/** ACDC 1: a north-south corridor with a west plaza room and an east alcove. */
+const ACDC_1_TILES = [
+  '......###......',
+  '......###......',
+  '......###......',
+  '......###......',
+  '..#######......',
+  '..#@@@###......',
+  '..#@@@###......',
+  '..#@@@###......',
+  '..#######......',
+  '......######...',
+  '......######...',
+  '......###......',
+  '......###......',
 ];
-/** North entrance, on the arm at the top of the square. */
-const ENTRANCE: [number, number] = [9, 0];
-/** Central hub where the three plazas meet. */
-const HUB: [number, number] = [9, 9];
 
-const HEIGHTS: Record<number, number> = { 0: 0, 1: 0.5, 2: 1.1 };
+/** Undernet: a dark ring around a central island, joined by four bridges. */
+const UNDERNET_TILES = [
+  '.................',
+  '..#############..',
+  '..#.....#.....#..',
+  '..#..@@@#@@@..#..',
+  '..#..@@@@@@@..#..',
+  '..####@@@@@####..',
+  '..#..@@@@@@@..#..',
+  '..#..@@@#@@@..#..',
+  '..#.....#.....#..',
+  '..#############..',
+  '.................',
+];
 
-export interface Cell {
-  gx: number;
-  gz: number;
-  height: number;
-  kind: 'void' | 'walk' | 'plaza';
+function squareArea(): AreaDef {
+  let a: AreaDef = {
+    id: 'acdc-square',
+    name: 'ACDC Square',
+    note: 'Three plazas in a triangle; entrance at the top.',
+    tiles: ACDC_SQUARE_TILES,
+    props: [],
+    portals: [],
+    landmarks: { plazas: [[9, 4], [4, 14], [14, 14]], entrance: [9, 0] },
+  };
+  // BBS terminals in the lower-left plaza, nav post beside the north entrance.
+  a = addProp(a, 'bbs', 3, 13);
+  a = addProp(a, 'bbs', 5, 13);
+  a = addProp(a, 'pylon', 8, 4);
+  a = addProp(a, 'mystery', 15, 14);
+  // Portal home: the entrance arm leads back out to ACDC 1.
+  a = addPortal(a, { gx: 9, gz: 1, to: { area: 'acdc-1', gx: 7, gz: 9 }, label: 'Exit to ACDC 1' });
+  // South plaza holds the warp to the Undernet.
+  a = addPortal(a, { gx: 9, gz: 15, to: { area: 'undernet', gx: 8, gz: 1 }, label: 'Warp: Undernet' });
+  return a;
 }
 
-export interface WorldData {
-  group: THREE.Group;
-  cells: Map<string, Cell>;
-  /** Solid colliders in world XZ for things you walk around. */
-  blockers: THREE.Box2[];
+function acdc1Area(): AreaDef {
+  let a: AreaDef = {
+    id: 'acdc-1',
+    name: 'ACDC 1',
+    note: 'Corridor linking ACDC 2 and the Square.',
+    tiles: ACDC_1_TILES,
+    props: [],
+    portals: [],
+    landmarks: { plazas: [[4, 6]], entrance: [7, 0] },
+  };
+  a = addProp(a, 'pylon', 2, 4);
+  a = addProp(a, 'mystery', 10, 9);
+  a = addPortal(a, { gx: 7, gz: 12, to: { area: 'acdc-square', gx: 9, gz: 2 }, label: 'To ACDC Square' });
+  return a;
 }
 
-function parseMap(): number[][] {
-  return MAP.map((row) => [...row].map((ch) => (ch === '@' ? 2 : ch === '#' ? 1 : 0)));
+function undernetArea(): AreaDef {
+  let a: AreaDef = {
+    id: 'undernet',
+    name: 'Undernet',
+    note: 'Dark ring around a central island.',
+    tiles: UNDERNET_TILES,
+    props: [],
+    portals: [],
+    landmarks: { plazas: [[8, 5]], entrance: [8, 1] },
+  };
+  a = addProp(a, 'mystery', 8, 4);
+  a = addProp(a, 'bbs', 6, 5);
+  // Return pad sits on the north bridge; arrivals land on the ring above it.
+  a = addPortal(a, { gx: 8, gz: 2, to: { area: 'acdc-square', gx: 8, gz: 15 }, label: 'Back to ACDC Square' });
+  return a;
 }
 
-export function gridToWorld(gx: number, gz: number): { x: number; z: number } {
-  return { x: (gx - CENTER_X) * TILE, z: (gz - CENTER_Z) * TILE };
-}
+export const BUILTIN_AREAS: AreaDef[] = [squareArea(), acdc1Area(), undernetArea()];
 
-export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): WorldData {
+// ---------------------------------------------------------------------------
+// World building
+// ---------------------------------------------------------------------------
+
+const CENTER = (rows: string[]) => ({
+  x: (rows[0]!.length - 1) / 2,
+  z: (rows.length - 1) / 2,
+});
+
+export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, area: AreaDef): WorldData {
+  const problems = validateArea(area);
+  if (problems.length > 0) {
+    throw new Error(`invalid area "${area.id}":\n  ${problems.join('\n  ')}`);
+  }
+
   const group = new THREE.Group();
   scene.add(group);
 
   const tileAtlas = loadAcdaTileAtlas(renderer);
   const cells = new Map<string, Cell>();
   const blockers: THREE.Box2[] = [];
-  const layout = parseMap();
+  const portals: Array<PortalDef & { x: number; z: number }> = [];
+  const { x: cx, z: cz } = CENTER(area.tiles);
+
+  const toWorld = (gx: number, gz: number) => ({ x: (gx - cx) * TILE, z: (gz - cz) * TILE });
 
   const half = TILE / 2;
   const bodyGeo = new THREE.BoxGeometry(TILE * 0.96, 1, TILE * 0.96);
-  const podiumGeo = new THREE.BoxGeometry(TILE * 0.9, 0.3, TILE * 0.9); // unit is 0.3 tall; scaled per skirt
-  const podiumMat = new THREE.MeshLambertMaterial({ color: PAL.panel });
+  const skirtGeo = new THREE.BoxGeometry(TILE * 0.9, 0.3, TILE * 0.9);
+  const skirtMat = new THREE.MeshLambertMaterial({ color: PAL.panel });
 
-  // Each surface kind maps onto one cell of the authentic 4-tile ACDC atlas.
-  // Tiles are 32x16, i.e. exactly one isometric diamond, so one tile covers one deck.
-  const deckMat = new Map<number, THREE.MeshLambertMaterial>();
-  const deckFor = (kind: number): THREE.MeshLambertMaterial => {
+  // Tiles 0 = mint floor, 1 = pale plaza, 2 = grey frame.
+  const deckMat = new Map<string, THREE.MeshLambertMaterial>();
+  const deckFor = (kind: Tile): THREE.MeshLambertMaterial => {
     let m = deckMat.get(kind);
-    if (!m) {
-      const tileIndex = kind === 2 ? 0 : 1;
-      const tint = kind === 2 ? 0xffffff : 0xc8d8ea;
-      // offset/repeat live on the texture, so each surface needs its own clone.
-      const tex = tileAtlas.clone();
-      tex.needsUpdate = true;
-      tex.repeat.set(1 / 4, 1);
-      tex.offset.set(tileIndex / 4, 0);
-      m = new THREE.MeshLambertMaterial({ color: tint, map: tex });
-      deckMat.set(kind, m);
-    }
+    if (m) return m;
+    const tileIndex = kind === '@' ? 1 : 0;
+    const tint = kind === '@' ? 0xffffff : 0xc8d8ea;
+    const tex = tileAtlas.clone();
+    tex.needsUpdate = true;
+    tex.repeat.set(1 / 4, 1);
+    tex.offset.set(tileIndex / 4, 0);
+    m = new THREE.MeshLambertMaterial({ color: tint, map: tex });
+    deckMat.set(kind, m);
     return m;
   };
 
-  // Neon edge strips kept as one shared material per kind.
-  const edgeMat = new Map<number, THREE.MeshBasicMaterial>();
-  const edgeFor = (kind: number): THREE.MeshBasicMaterial => {
+  const edgeMat = new Map<Tile, THREE.MeshBasicMaterial>();
+  const edgeFor = (kind: Tile): THREE.MeshBasicMaterial => {
     let m = edgeMat.get(kind);
-    if (!m) {
-      m = new THREE.MeshBasicMaterial({ color: kind === 2 ? PAL.neon : PAL.gridLine });
-      edgeMat.set(kind, m);
-    }
+    if (m) return m;
+    m = new THREE.MeshBasicMaterial({ color: kind === '@' ? PAL.neon : PAL.gridLine });
+    edgeMat.set(kind, m);
     return m;
   };
 
-  const edgeGeoLong = new THREE.BoxGeometry(TILE * 0.96, 0.05, 0.09);
-  const edgeGeoShort = new THREE.BoxGeometry(0.09, 0.05, TILE * 0.96);
+  const edgeLong = new THREE.BoxGeometry(TILE * 0.96, 0.05, 0.09);
+  const edgeShort = new THREE.BoxGeometry(0.09, 0.05, TILE * 0.96);
 
-  for (let gz = 0; gz < MAP_H; gz++) {
-    for (let gx = 0; gx < MAP_W; gx++) {
-      const kind = layout[gz]![gx]!;
-      const { x, z } = gridToWorld(gx, gz);
-      const cell: Cell = {
+  const rows = area.tiles;
+  const width = rows[0]!.length;
+  const heightAt = (gx: number, gz: number): number => {
+    if (gz < 0 || gz >= rows.length || gx < 0 || gx >= width) return 0;
+    return TILE_HEIGHT[rows[gz]![gx] as Tile];
+  };
+
+  for (let gz = 0; gz < rows.length; gz++) {
+    const row = rows[gz]!;
+    for (let gx = 0; gx < row.length; gx++) {
+      const kind = row[gx] as Tile;
+      const { x, z } = toWorld(gx, gz);
+      const h = TILE_HEIGHT[kind];
+      cells.set(`${gx},${gz}`, {
         gx,
         gz,
-        height: HEIGHTS[kind]!,
-        kind: kind === 0 ? 'void' : kind === 2 ? 'plaza' : 'walk',
-      };
-      cells.set(`${gx},${gz}`, cell);
+        height: h,
+        kind: kind === '.' ? 'void' : kind === '@' ? 'plaza' : 'walk',
+      });
+      if (!isWalkable(kind)) continue;
 
-      if (kind === 0) {
-        // Open void: render nothing; the plate below reads as the cyber abyss.
-        continue;
-      }
-
-      const h = cell.height;
-
-      // Deck slab: the walkable surface.
       const deck = new THREE.Mesh(bodyGeo, deckFor(kind));
       deck.position.set(x, h - 0.5, z);
       deck.matrixAutoUpdate = false;
       deck.updateMatrix();
       group.add(deck);
 
-      // Short skirt under each deck tile: just enough thickness to read as a slab.
       const skirtH = 0.55;
-      const skirt = new THREE.Mesh(podiumGeo, podiumMat);
+      const skirt = new THREE.Mesh(skirtGeo, skirtMat);
       skirt.position.set(x, h - 0.5 - skirtH / 2, z);
       skirt.scale.y = skirtH / 0.3;
       skirt.matrixAutoUpdate = false;
       skirt.updateMatrix();
       group.add(skirt);
 
-      // Neon edging only where the neighbouring tile is void or lower.
       const edge = edgeFor(kind);
-      const neighbourBelow = (nx: number, nz: number): boolean => {
-        if (nx < 0 || nz < 0 || nx >= MAP_W || nz >= MAP_H) return true;
-        return HEIGHTS[layout[nz]![nx]!]! < h;
-      };
+      const below = (nx: number, nz: number) => heightAt(nx, nz) < h;
       const strips: Array<[THREE.BufferGeometry, number, number]> = [];
-      if (neighbourBelow(gx, gz - 1)) strips.push([edgeGeoLong, 0, -half]);
-      if (neighbourBelow(gx, gz + 1)) strips.push([edgeGeoLong, 0, half]);
-      if (neighbourBelow(gx - 1, gz)) strips.push([edgeGeoShort, -half, 0]);
-      if (neighbourBelow(gx + 1, gz)) strips.push([edgeGeoShort, half, 0]);
+      if (below(gx, gz - 1)) strips.push([edgeLong, 0, -half]);
+      if (below(gx, gz + 1)) strips.push([edgeLong, 0, half]);
+      if (below(gx - 1, gz)) strips.push([edgeShort, -half, 0]);
+      if (below(gx + 1, gz)) strips.push([edgeShort, half, 0]);
       for (const [geo, ox, oz] of strips) {
         const strip = new THREE.Mesh(geo, edge);
         strip.position.set(x + ox, h + 0.01, z + oz);
@@ -179,7 +260,6 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): W
     }
   }
 
-  // Void plate: never shows the clear color, and frames the square.
   const voidPlate = new THREE.Mesh(
     new THREE.PlaneGeometry(640, 640),
     new THREE.MeshBasicMaterial({ map: voidTexture() }),
@@ -188,68 +268,90 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): W
   voidPlate.position.y = -3.2;
   group.add(voidPlate);
 
-  // Terminal pylons at the heart of each plaza — the BBS stations and nav posts.
-  const pylonMat = new THREE.MeshLambertMaterial({
-    color: PAL.trim,
-    emissive: PAL.trim,
-    emissiveIntensity: 0.4,
-  });
-  const pylonGeo = new THREE.BoxGeometry(1.15, 2.8, 1.15);
-  const capGeo = new THREE.BoxGeometry(1.55, 0.2, 1.55);
+  // --- Props -------------------------------------------------------------
+  const propMats = {
+    bbs: new THREE.MeshLambertMaterial({ color: 0x2bd6a0, emissive: 0x2bd6a0, emissiveIntensity: 0.45 }),
+    mystery: new THREE.MeshLambertMaterial({ color: 0xf8f850, emissive: 0xf8f850, emissiveIntensity: 0.5 }),
+    pylon: new THREE.MeshLambertMaterial({ color: PAL.trim, emissive: PAL.trim, emissiveIntensity: 0.4 }),
+    avatar: new THREE.MeshLambertMaterial({ color: 0xd860b0, emissive: 0xd860b0, emissiveIntensity: 0.5 }),
+  };
   const capMat = new THREE.MeshBasicMaterial({ color: PAL.neon });
-  // Two BBS terminals sit in the lower-left plaza, as in the game; the north
-  // plaza carries the nav post beside the entrance.
-  // Props sit off the plaza centres so each plaza centre stays walkable and the
-  // three-platform topology can be traversed and tested.
-  const pylonCells: Array<[number, number]> = [
-    [PLAZAS[1]![0] - 1, PLAZAS[1]![1] - 1],
-    [PLAZAS[1]![0] + 1, PLAZAS[1]![1] - 1],
-    [PLAZAS[0]![0] - 1, PLAZAS[0]![1]],
-  ];
-  for (const [gx, gz] of pylonCells) {
-    const { x, z } = gridToWorld(gx, gz);
-    const base = HEIGHTS[2]!;
-    const pylon = new THREE.Mesh(pylonGeo, pylonMat);
-    pylon.position.set(x, base + 1.4, z);
-    group.add(pylon);
 
-    const cap = new THREE.Mesh(capGeo, capMat);
-    cap.position.set(x, base + 2.9, z);
+  for (const prop of area.props) {
+    const { x, z } = toWorld(prop.gx, prop.gz);
+    const base = TILE_HEIGHT[rows[prop.gz]![prop.gx] as Tile];
+    const mat = propMats[prop.type];
+    const dims: Record<PropType, [number, number, number]> = {
+      bbs: [1.2, 2.2, 1.2],
+      mystery: [0.9, 0.9, 0.9],
+      pylon: [1.15, 2.8, 1.15],
+      avatar: [1, 1.6, 1],
+    };
+    const [w, hh, d] = dims[prop.type];
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, hh, d), mat);
+    mesh.position.set(x, base + hh / 2, z);
+    group.add(mesh);
+
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(w + 0.35, 0.16, d + 0.35), capMat);
+    cap.position.set(x, base + hh + 0.08, z);
     group.add(cap);
 
-    const glow = new THREE.PointLight(PAL.neon, 5, 12, 2);
-    glow.position.set(x, base + 2.2, z);
-    group.add(glow);
+    if (prop.type !== 'mystery') {
+      const glow = new THREE.PointLight(mat.color, 4, 10, 2);
+      glow.position.set(x, base + hh * 0.8, z);
+      group.add(glow);
+    }
 
+    const solid = prop.type === 'mystery' ? 0.45 : 0.85;
     blockers.push(new THREE.Box2(
-      new THREE.Vector2(x - 0.85, z - 0.85),
-      new THREE.Vector2(x + 0.85, z + 0.85),
+      new THREE.Vector2(x - solid, z - solid),
+      new THREE.Vector2(x + solid, z + solid),
     ));
   }
 
-  // Hub crystal: the square's data core.
-  const hub = gridToWorld(HUB[0], HUB[1]);
-  const crystal = new THREE.Mesh(
-    new THREE.OctahedronGeometry(0.85, 0),
-    new THREE.MeshLambertMaterial({
-      color: PAL.crystal,
-      emissive: PAL.crystal,
-      emissiveIntensity: 0.7,
-    }),
-  );
-  crystal.position.set(hub.x, HEIGHTS[2]! + 1.3, hub.z);
-  crystal.scale.y = 1.6;
-  group.add(crystal);
+  // --- Portals -----------------------------------------------------------
+  const padGeo = new THREE.TorusGeometry(0.72, 0.1, 8, 24);
+  const padMat = new THREE.MeshBasicMaterial({ color: PAL.crystal });
+  const innerMat = new THREE.MeshBasicMaterial({
+    color: PAL.crystal,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.DoubleSide,
+  });
+  for (const portal of area.portals) {
+    const { x, z } = toWorld(portal.gx, portal.gz);
+    const base = TILE_HEIGHT[rows[portal.gz]![portal.gx] as Tile];
 
-  const crystalLight = new THREE.PointLight(PAL.crystal, 9, 20, 2);
-  crystalLight.position.set(hub.x, HEIGHTS[2]! + 2.4, hub.z);
-  group.add(crystalLight);
-  blockers.push(new THREE.Box2(
-    new THREE.Vector2(hub.x - 0.8, hub.z - 0.8),
-    new THREE.Vector2(hub.x + 0.8, hub.z + 0.8),
-  ));
+    const ring = new THREE.Mesh(padGeo, padMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, base + 0.06, z);
+    group.add(ring);
 
-  return { group, cells, blockers };
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.66, 24), innerMat);
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(x, base + 0.04, z);
+    group.add(disc);
+
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.5, 0.66, 2.2, 16, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: PAL.crystal,
+        transparent: true,
+        opacity: 0.16,
+        side: THREE.DoubleSide,
+      }),
+    );
+    beam.position.set(x, base + 1.1, z);
+    group.add(beam);
+
+    const light = new THREE.PointLight(PAL.crystal, 6, 9, 2);
+    light.position.set(x, base + 1.2, z);
+    group.add(light);
+
+    portals.push({ ...portal, x, z });
+  }
+
+  return { group, cells, blockers, portals, area };
 }
 
 /**
@@ -261,15 +363,61 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer): W
  * stick at every boundary.)
  */
 export function surfaceHeightAt(world: WorldData, x: number, z: number): number | null {
-  const gx = Math.round(x / TILE + CENTER_X);
-  const gz = Math.round(z / TILE + CENTER_Z);
+  const { x: cx, z: cz } = CENTER(world.area.tiles);
+  const gx = Math.round(x / TILE + cx);
+  const gz = Math.round(z / TILE + cz);
   const cell = world.cells.get(`${gx},${gz}`);
   if (!cell || cell.kind === 'void') return null;
   return cell.height;
 }
 
-/** World position of the square's entrance, on the north arm. */
-export const SPAWN = gridToWorld(ENTRANCE[0], ENTRANCE[1]);
+export function worldFromArea(area: AreaDef): { x: number; z: number } {
+  const { x: cx, z: cz } = CENTER(area.tiles);
+  const [gx, gz] = area.landmarks.entrance;
+  return { x: (gx - cx) * TILE, z: (gz - cz) * TILE };
+}
 
-/** World positions of the three plaza centres, for tests and camera framing. */
-export const PLAZA_POINTS = PLAZAS.map(([gx, gz]) => gridToWorld(gx, gz));
+export function gridToWorld(area: AreaDef, gx: number, gz: number): { x: number; z: number } {
+  const { x: cx, z: cz } = CENTER(area.tiles);
+  return { x: (gx - cx) * TILE, z: (gz - cz) * TILE };
+}
+
+/**
+ * Validates portals across the whole world. A per-area check cannot see whether a
+ * destination exists in another area, or whether it lands on the void, so this runs
+ * once over all areas after any edit or load.
+ */
+export function validateWorld(areas: AreaDef[]): string[] {
+  const problems: string[] = [];
+  const byId = new Map(areas.map((a) => [a.id, a]));
+
+  for (const area of areas) {
+    for (const portal of area.portals) {
+      const dest = byId.get(portal.to.area);
+      const where = `${area.id} portal at ${portal.gx},${portal.gz}`;
+      if (!dest) {
+        problems.push(`${where}: unknown destination area "${portal.to.area}"`);
+        continue;
+      }
+      const { gx, gz } = portal.to;
+      const row = dest.tiles[gz];
+      if (row === undefined || gx < 0 || gx >= row.length) {
+        problems.push(`${where}: destination ${gx},${gz} is outside ${dest.id}`);
+        continue;
+      }
+      if (!isWalkable(row[gx] as Tile)) {
+        problems.push(`${where}: destination ${gx},${gz} in ${dest.id} is void`);
+        continue;
+      }
+      // Landing on another portal would warp the player again on arrival.
+      const stacked = dest.portals.find((q) => q.gx === gx && q.gz === gz);
+      if (stacked) {
+        problems.push(`${where}: destination ${gx},${gz} in ${dest.id} lands on another portal`);
+      }
+    }
+  }
+  return problems;
+}
+
+/** Named editor helpers re-exported so the UI has one import surface. */
+export { addProp, addPortal, blankArea, setTile, validateArea, type AreaDef, type PortalDef };
