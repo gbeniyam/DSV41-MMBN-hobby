@@ -62,6 +62,16 @@ the live world and persists to `localStorage`:
 - **Areas** — switch between ACDC Square, ACDC 1, and the Undernet, or create a blank one.
 - **Export / Import** — JSON round-trip of every area, so maps can be committed to the repo.
 
+### Prop art
+
+BBS terminals, nav posts, Mystery Data, and warp pads are **procedural geometry**, not
+ripped art. No public source was found for MMBN3 net-area prop sprites: the Sprites INC
+MMBN3 section ships map screenshots, misc, people, and navi sprites only, and The Rockman
+EXE Zone wiki exposes battle-grid panel/object art (40x24 combat tiles) rather than
+overworld props. The map rips contain props painted into the scenic background, so they
+cannot be cut out cleanly. Drop-in art would go in `public/sprites/` and be wired the same
+way as the tile atlas.
+
 Areas are plain data (`src/area.ts`):
 
 ```ts
